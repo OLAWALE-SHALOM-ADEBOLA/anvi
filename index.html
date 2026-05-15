@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>ANVI Navigation Assistant</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+  <style>
+    :root{--green:#00c853;--amber:#ffab00;--red:#d50000;--blue:#2962ff;}
+    *{box-sizing:border-box;margin:0;padding:0;touch-action:manipulation;}
+    body{
+      background:#000;color:#fff;
+      font-family:'Segoe UI',Arial,sans-serif;
+      height:100vh;width:100vw;overflow:hidden;
+      display:flex;flex-direction:column;user-select:none;
+    }
+
+    /* ══ TOUCH ZONE ══ */
+    #touchZone{
+      flex:1;display:flex;flex-direction:column;
+      align-items:flex-start;justify-content:flex-start;
+      width:100%;padding:16px;gap:10px;transition:background 0.4s;
+    }
+    #touchZone.clear    {background:radial-gradient(ellipse at center,#071a0c 0%,#000 100%);}
+    #touchZone.warning  {background:radial-gradient(ellipse at center,#1e1400 0%,#000 100%);}
+    #touchZone.emergency{background:radial-gradient(ellipse at center,#1a0000 0%,#000 100%);animation:blink .5s infinite alternate;}
+    #touchZone.finding  {background:radial-gradient(ellipse at center,#001433 0%,#000 100%);animation:blink .8s infinite alternate;}
+    #touchZone.listening{background:radial-gradient(ellipse at center,#0d0033 0%,#000 100%);}
+    #touchZone.idle     {background:#000;}
+    @keyframes blink{from{opacity:1}to{opacity:.6}}
+
+    /* ══ ORB ══ */
+    #orbWrap{
+      position:relative;width:100px;height:100px;
+      display:flex;align-items:center;justify-content:center;
+      margin-top:10px;margin-left:8px;
+    }
+    #orbRing{
+      position:absolute;width:100px;height:100px;border-radius:50%;
+      border:2px solid rgba(0,200,83,0.3);
+      animation:ringRotate 8s linear infinite;
+    }
+    @keyframes ringRotate{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+    #orbPulse{
+      position:absolute;width:74px;height:74px;border-radius:50%;
+      border:1.5px solid rgba(0,200,83,0.15);
+    }
+    #orbPulse.active{animation:pulseRing 1s ease-out infinite;}
+    @keyframes pulseRing{0%{transform:scale(1);opacity:.5;}100%{transform:scale(1.5);opacity:0;}}
+    #orbCore{
+      position:relative;width:58px;height:58px;border-radius:50%;
+      background:radial-gradient(circle at 35% 35%,#00e676,#00c853,#005724);
+      box-shadow:0 0 20px rgba(0,200,83,0.5);
+      display:flex;align-items:center;justify-content:center;
+      transition:all 0.3s;z-index:2;
+    }
+    #orbCore.warning  {background:radial-gradient(circle at 35% 35%,#ffd740,#ffab00,#ff6f00);box-shadow:0 0 20px rgba(255,171,0,0.6);}
+    #orbCore.emergency{background:radial-gradient(circle at 35% 35%,#ff5252,#d50000,#7f0000);box-shadow:0 0 25px rgba(213,0,0,0.7);}
+    #orbCore.finding  {background:radial-gradient(circle at 35% 35%,#80d8ff,#40c4ff,#006064);box-shadow:0 0 20px rgba(64,196,255,0.6);}
+    #orbCore.listening{background:radial-gradient(circle at 35% 35%,#ea80fc,#aa00ff,#4a0080);box-shadow:0 0 22px rgba(170,0,255,0.7);}
+    #orbCore.speaking {animation:speakBounce 0.4s ease-in-out infinite alternate;}
+    @keyframes speakBounce{from{transform:scale(1);}to{transform:scale(1.18);}}
+    .orbDot{
+      position:absolute;width:7px;height:7px;border-radius:50%;
+      background:var(--green);opacity:0;transition:opacity 0.3s;
+    }
+    .orbDot.d1{top:4px;left:50%;transform:translateX(-50%);}
+    .orbDot.d2{bottom:4px;left:50%;transform:translateX(-50%);}
+    .orbDot.d3{left:4px;top:50%;transform:translateY(-50%);}
+    .orbDot.d4{right:4px;top:50%;transform:translateY(-50%);}
+    #orbWrap.speaking .orbDot{opacity:1;animation:dotPulse 0.6s ease-in-out infinite alternate;}
+    @keyframes dotPulse{from{opacity:.3;}to{opacity:1;}}
+
+    /* ══ LISTENING INDICATOR ══ */
+    #listenBadge{
+      display:none;
+      align-items:center;gap:8px;
+      margin-left:8px;
+      padding:6px 14px;border-radius:30px;
+      background:rgba(170,0,255,0.15);
+      border:1.5px solid #aa00ff;
+      font-size:13px;color:#ea80fc;font-weight:bold;
+    }
+    #listenBadge.active{display:flex;}
+    .micDot{
+      width:8px;height:8px;border-radius:50%;
+      background:#aa00ff;animation:micPulse 0.8s infinite alternate;
+    }
+    @keyframes micPulse{from{opacity:1;}to{opacity:0.2;}}
+
+    #statusText{
+      font-size:22px;font-weight:bold;
+      text-align:left;line-height:1.3;letter-spacing:.5px;margin-left:8px;
+    }
+    #subText{
+      font-size:14px;color:#aaa;text-align:left;
+      line-height:1.5;max-width:300px;margin-left:8px;
+    }
+
+    /* ══ DETECTION CARDS ══ */
+    #detCards{
+      display:flex;flex-direction:column;gap:6px;
+      width:100%;max-width:380px;max-height:160px;
+      overflow-y:auto;margin-left:8px;
+    }
+    .detCard{
+      display:flex;align-items:center;justify-content:space-between;
+      background:rgba(255,255,255,0.05);border-radius:10px;
+      padding:8px 14px;border-left:4px solid var(--green);
+      animation:slideIn .25s ease;font-size:13px;
+    }
+    .detCard.danger  {border-left-color:var(--red);}
+    .detCard.caution {border-left-color:var(--amber);}
+    .detCard.emergency{border-left-color:#ff1744;background:rgba(255,23,68,0.1);}
+    .detCard .label{font-weight:600;}
+    .detCard .dist{color:#aaa;font-size:12px;margin-left:8px;}
+    @keyframes slideIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+
+    /* ══ CAM PILL ══ */
+    #camPill{
+      display:flex;align-items:center;gap:8px;
+      padding:6px 16px;border-radius:30px;
+      background:rgba(255,255,255,0.05);
+      border:1.5px solid #333;font-size:13px;
+      font-weight:bold;transition:all 0.3s;margin-left:8px;
+    }
+    #camPill.off    {border-color:#444;color:#666;}
+    #camPill.on     {border-color:var(--green);color:var(--green);box-shadow:0 0 10px rgba(0,200,83,.25);}
+    #camPill.loading{border-color:var(--amber);color:var(--amber);}
+    .camDot{width:8px;height:8px;border-radius:50%;background:#444;}
+    .camDot.on     {background:var(--green);animation:cp 1.5s infinite;}
+    .camDot.loading{background:var(--amber);animation:cp .5s infinite;}
+    @keyframes cp{0%,100%{opacity:1}50%{opacity:.3}}
+
+    /* ══ HINT BAR ══ */
+    #hintBar{
+      background:#0a0a0a;border-top:1px solid #1a1a1a;
+      padding:8px 16px;display:grid;
+      grid-template-columns:1fr 1fr;gap:4px;
+    }
+    .hint{display:flex;align-items:center;gap:7px;font-size:11px;color:#444;padding:3px 0;}
+    .hint span:first-child{font-size:14px;min-width:20px;text-align:center;}
+
+    /* Hidden camera elements */
+    #videoWrap{
+      position:fixed;bottom:55px;right:6px;
+      width:64px;height:48px;border-radius:6px;
+      overflow:hidden;border:1px solid #1a1a1a;
+      z-index:5;pointer-events:none;
+    }
+    #videoWrap.hidden{opacity:0;}
+    #video{width:100%;height:100%;object-fit:cover;display:block;}
+    #canvas{position:fixed;opacity:0;width:1px;height:1px;top:-100px;}
+
+    #pressRing{
+      position:fixed;top:50%;left:50%;
+      transform:translate(-50%,-50%);
+      width:130px;height:130px;border-radius:50%;
+      border:4px solid #40c4ff;opacity:0;pointer-events:none;
+      animation:rp 1s infinite;
+    }
+    #pressRing.active{opacity:1;}
+    @keyframes rp{0%{transform:translate(-50%,-50%) scale(1);opacity:1}100%{transform:translate(-50%,-50%) scale(1.2);opacity:.3}}
+
+    #muteIcon{position:fixed;top:12px;right:12px;font-size:20px;opacity:.5;}
+    #connDot{
+      position:fixed;top:16px;left:12px;
+      width:11px;height:11px;border-radius:50%;
+      background:#333;transition:background .3s;
+    }
+    #connDot.connected   {background:var(--green);box-shadow:0 0 6px var(--green);}
+    #connDot.disconnected{background:#333;}
+    #connDot.scanning    {background:var(--amber);box-shadow:0 0 6px var(--amber);}
+
+    #errBox{
+      display:none;position:fixed;bottom:60px;left:8px;right:8px;
+      background:#1a0000;border:1px solid var(--red);border-radius:10px;
+      padding:12px 14px;font-size:12px;color:#ff6b6b;
+      line-height:1.6;z-index:20;white-space:pre-line;
+    }
+  </style>
+</head>
+<body>
+
+<div id="videoWrap" class="hidden">
+  <video id="video" autoplay playsinline muted></video>
+</div>
+<canvas id="canvas"></canvas>
+<div id="connDot"></div>
+<div id="muteIcon">🔊</div>
+<div id="pressRing"></div>
+<div id="errBox"></div>
+
+<div id="touchZone" class="idle">
+  <div id="orbWrap">
+    <div id="orbRing"></div>
+    <div id="orbPulse"></div>
+    <div class="orbDot d1"></div>
+    <div class="orbDot d2"></div>
+    <div class="orbDot d3"></div>
+    <div class="orbDot d4"></div>
+    <div id="orbCore"></div>
+  </div>
+
+  <div id="statusText">ANVI Navigation</div>
+  <div id="subText">Tap to connect your cane</div>
+
+  <!-- Listening indicator -->
+  <div id="listenBadge">
+    <div class="micDot"></div>
+    <span id="listenText">Listening...</span>
+  </div>
+
+  <div id="camPill" class="off">
+    <div class="camDot" id="camDot"></div>
+    <span id="camPillText">Camera OFF</span>
+  </div>
+
+  <div id="detCards"></div>
+</div>
+
+<div id="hintBar">
+  <div class="hint"><span>👆</span><span>Tap — Connect / Status</span></div>
+  <div class="hint"><span>👆👆</span><span>Double tap — Start camera</span></div>
+  <div class="hint"><span>✋</span><span>Hold — Find cane</span></div>
+  <div class="hint"><span>🎤</span><span>Say "ANVI" — Ask anything</span></div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+// BLE CONFIG
+// ══════════════════════════════════════════════════════════
+const SERVICE_UUID    = "12345678-1234-1234-1234-123456789abc";
+const ALERT_CHAR_UUID = "abcd1234-ab12-ab12-ab12-abcdef123456";
+const CMD_CHAR_UUID   = "dcba4321-ba21-ba21-ba21-fedcba654321";
+
+// ══════════════════════════════════════════════════════════
+// DETECTION CONFIG
+// Only these objects are detected — everything else ignored
+// Only announced when within MAX_DETECT_FEET
+// ══════════════════════════════════════════════════════════
+const MAX_DETECT_FEET = 10;  // only announce within 10 feet
+
+const DANGER_OBJECTS = [
+  "person","car","truck","bus","motorcycle","bicycle","dog"
+];
+const CAUTION_OBJECTS = [
+  "chair","dining table","bench","couch","potted plant","suitcase","backpack"
+];
+const ALL_TRACKED = [...DANGER_OBJECTS, ...CAUTION_OBJECTS];
+
+// Average real heights in cm for distance calculation
+const REAL_HEIGHT_CM = {
+  person:170, car:150, truck:280, bus:300,
+  motorcycle:110, bicycle:100, dog:50,
+  chair:90, "dining table":75, bench:80,
+  couch:85, "potted plant":40, suitcase:65, backpack:50
+};
+const FOCAL_LENGTH_PX = 600;
+
+// ══════════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════════
+let alertChar    = null, cmdChar = null, bleConnected = false;
+let model        = null, cameraOn = false, detecting = false;
+let isFinding    = false, muted = false;
+let lastSpoken   = "", lastSpokenAt = 0;
+const COOLDOWN   = 4000;
+let lastTap      = 0, tapTimeout = null, pressTimer = null, pressStart = 0;
+const LONG_PRESS = 800;
+let speakTimer   = null;
+
+// Current detections — kept for voice questions
+let currentDetections = [];  // [{label, distFt, isDanger}]
+
+const video  = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx    = canvas.getContext("2d");
+
+// ══════════════════════════════════════════════════════════
+// ORB ANIMATION
+// ══════════════════════════════════════════════════════════
+function setOrbState(state) {
+  document.getElementById("orbCore").className = state;
+  document.getElementById("orbWrap").className = state === "speaking" ? "speaking" : "";
+  document.getElementById("orbPulse").className =
+    (state === "speaking" || state === "clear") ? "active" : "";
+}
+
+function orbSpeak() {
+  setOrbState("speaking");
+  clearInterval(speakTimer);
+  speakTimer = setInterval(() => {
+    if (!window.speechSynthesis.speaking) {
+      setOrbState(currentZone());
+      clearInterval(speakTimer);
+    }
+  }, 300);
+}
+
+function currentZone() {
+  return document.getElementById("touchZone").className || "idle";
+}
+
+// ══════════════════════════════════════════════════════════
+// ERROR BOX
+// ══════════════════════════════════════════════════════════
+function showErr(msg) {
+  const b = document.getElementById("errBox");
+  b.textContent = msg; b.style.display = "block";
+  setTimeout(() => { b.style.display = "none"; }, 9000);
+}
+
+// ══════════════════════════════════════════════════════════
+// SPEECH OUTPUT
+// ══════════════════════════════════════════════════════════
+function speak(text, force = false) {
+  if (muted && !force) return;
+  const now = Date.now();
+  if (!force && text === lastSpoken && now - lastSpokenAt < COOLDOWN) return;
+  lastSpoken = text; lastSpokenAt = now;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+  u.onstart = () => orbSpeak();
+  u.onend   = () => { setOrbState(currentZone()); resumeListening(); };
+  window.speechSynthesis.speak(u);
+}
+
+// ══════════════════════════════════════════════════════════
+// DISTANCE ESTIMATION — returns whole feet only
+// ══════════════════════════════════════════════════════════
+function estimateDist(label, bboxH) {
+  const realH = REAL_HEIGHT_CM[label];
+  if (!realH || bboxH < 5) return null;
+  const distCm = (realH * FOCAL_LENGTH_PX) / bboxH;
+  const distFt = distCm / 30.48;
+  return Math.round(distFt);  // whole feet only
+}
+
+function distLabel(ft) {
+  if (ft === null) return "";
+  if (ft < 1)     return "less than 1 foot";
+  if (ft === 1)   return "1 foot";
+  return ft + " feet";
+}
+
+function urgencyLevel(ft) {
+  if (ft === null) return "caution";
+  if (ft < 3)  return "emergency";
+  if (ft < 6)  return "warning";
+  if (ft <= 10) return "caution";
+  return "none";
+}
+
+// ══════════════════════════════════════════════════════════
+// CAM PILL
+// ══════════════════════════════════════════════════════════
+function setCamPill(state) {
+  document.getElementById("camPill").className = state;
+  document.getElementById("camDot").className  = "camDot " + state;
+  const t = document.getElementById("camPillText");
+  if (state === "on")      t.textContent = "📷 Camera ON — AI Active";
+  if (state === "off")     t.textContent = "Camera OFF";
+  if (state === "loading") t.textContent = "Camera Loading...";
+}
+
+// ══════════════════════════════════════════════════════════
+// STATUS READOUT
+// ══════════════════════════════════════════════════════════
+function readStatus() {
+  let m = "";
+  m += bleConnected ? "Cane is connected. " : "Cane is not connected. ";
+  m += cameraOn     ? "Camera and AI detection are ON. " : "Camera is OFF. Double tap to start. ";
+  m += muted        ? "Voice is muted." : "Voice is on.";
+  speak(m, true);
+}
+
+// ══════════════════════════════════════════════════════════
+// UI
+// ══════════════════════════════════════════════════════════
+function setUI(zone, title, sub) {
+  document.getElementById("touchZone").className = zone;
+  document.getElementById("statusText").textContent = title;
+  document.getElementById("subText").textContent   = sub;
+  setOrbState(zone);
+}
+
+// ══════════════════════════════════════════════════════════
+// GESTURES
+// ══════════════════════════════════════════════════════════
+const zone = document.getElementById("touchZone");
+
+zone.addEventListener("touchstart", e => {
+  pressStart = Date.now();
+  pressTimer = setTimeout(triggerLongPress, LONG_PRESS);
+  document.getElementById("pressRing").classList.add("active");
+}, { passive: true });
+
+zone.addEventListener("touchend", e => {
+  clearTimeout(pressTimer);
+  document.getElementById("pressRing").classList.remove("active");
+  if (Date.now() - pressStart >= LONG_PRESS) return;
+  const now = Date.now();
+  if (now - lastTap < 350) {
+    clearTimeout(tapTimeout); lastTap = 0; triggerDoubleTap();
+  } else {
+    lastTap = now;
+    tapTimeout = setTimeout(() => { lastTap = 0; triggerSingleTap(); }, 350);
+  }
+}, { passive: true });
+
+zone.addEventListener("touchmove", () => {
+  clearTimeout(pressTimer);
+  document.getElementById("pressRing").classList.remove("active");
+}, { passive: true });
+
+let touchStartY = 0;
+document.addEventListener("touchstart", e => { touchStartY = e.touches[0].clientY; }, { passive: true });
+document.addEventListener("touchend", e => {
+  if (touchStartY - e.changedTouches[0].clientY > 60) toggleMute();
+}, { passive: true });
+
+function triggerSingleTap()  { bleConnected ? readStatus() : connectBLE(); }
+function triggerDoubleTap()  {
+  cameraOn
+    ? speak("Camera is already on and detecting. Say ANVI to ask me anything.", true)
+    : startCamera();
+}
+async function triggerLongPress() {
+  if (!bleConnected) { speak("Cane not connected. Tap once to connect first.", true); return; }
+  isFinding = !isFinding;
+  try {
+    await cmdChar.writeValue(new TextEncoder().encode(isFinding ? "FIND" : "FIND_STOP"));
+    if (isFinding) {
+      setUI("finding", "Finding Cane...", "Follow the beeping. Hold again to stop.");
+      speak("Finding your cane. Follow the beeping sound. Hold anywhere to stop.", true);
+    } else {
+      setUI("clear", "All Clear", cameraOn ? "Camera detection active" : "Safe to walk");
+      speak("Find mode stopped. Cane is nearby.", true);
+    }
+  } catch(e) { speak("Could not send find command.", true); }
+}
+
+function toggleMute() {
+  muted = !muted;
+  document.getElementById("muteIcon").textContent = muted ? "🔇" : "🔊";
+  muted ? window.speechSynthesis.cancel() : speak("Voice is on", true);
+}
+
+// ══════════════════════════════════════════════════════════
+// BLUETOOTH
+// ══════════════════════════════════════════════════════════
+async function connectBLE() {
+  if (!navigator.bluetooth) {
+    speak("Bluetooth not supported. Please use Chrome on Android.", true); return;
+  }
+  try {
+    setUI("idle", "Scanning...", "Looking for ANVI Cane");
+    document.getElementById("connDot").className = "scanning";
+    speak("Scanning for your cane. Please wait.", true);
+
+    const device  = await navigator.bluetooth.requestDevice({
+      filters: [{ name: "ANVI Cane" }], optionalServices: [SERVICE_UUID]
+    });
+    speak("Cane found. Connecting.", true);
+    const server  = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+
+    alertChar = await service.getCharacteristic(ALERT_CHAR_UUID);
+    await alertChar.startNotifications();
+    alertChar.addEventListener("characteristicvaluechanged", e => {
+      handleCaneAlert(new TextDecoder().decode(e.target.value));
+    });
+    cmdChar = await service.getCharacteristic(CMD_CHAR_UUID);
+
+    bleConnected = true;
+    document.getElementById("connDot").className = "connected";
+    setUI("clear", "Cane Connected", "Tap for status. Double tap to start camera. Say ANVI to ask.");
+    speak("Cane connected and ready. Tap to hear your status. Double tap to start camera. Say ANVI to ask me anything.", true);
+
+    device.addEventListener("gattserverdisconnected", () => {
+      bleConnected = false;
+      document.getElementById("connDot").className = "disconnected";
+      setUI("idle", "Cane Disconnected", "Tap to reconnect");
+      speak("Cane disconnected. Tap to reconnect.", true);
+    });
+  } catch(e) {
+    document.getElementById("connDot").className = "disconnected";
+    setUI("idle", "Connection Failed", "Tap to try again");
+    speak("Could not connect. Make sure cane is powered on, then tap to try again.", true);
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// CANE ALERTS
+// ══════════════════════════════════════════════════════════
+function handleCaneAlert(msg) {
+  if (isFinding) return;
+  switch(msg) {
+    case "EMERGENCY":
+      setUI("emergency", "STOP — Obstacle!", "Stop walking immediately");
+      speak("Obstacle! Stop now!", true); break;
+    case "WARNING_CLOSE":
+      setUI("warning", "Obstacle Very Close", "Slow down");
+      speak("Obstacle very close ahead"); break;
+    case "WARNING":
+      setUI("warning", "Obstacle Ahead", "Proceed carefully");
+      speak("Obstacle ahead, slow down"); break;
+    case "CLEAR":
+      setUI("clear", "All Clear", cameraOn ? "Camera detection active" : "Safe to walk"); break;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// CAMERA
+// ══════════════════════════════════════════════════════════
+async function startCamera() {
+  if (cameraOn) return;
+  speak("Starting camera. Please wait.", true);
+  setUI("idle", "Starting Camera...", "Please wait");
+  setCamPill("loading");
+  document.getElementById("videoWrap").classList.remove("hidden");
+
+  let stream = null;
+  const attempts = [
+    { video: { facingMode: { exact: "environment" } }, audio: false },
+    { video: { facingMode: "environment" }, audio: false },
+    { video: { width: 640, height: 480 }, audio: false },
+    { video: true, audio: false }
+  ];
+
+  for (const c of attempts) {
+    try { stream = await navigator.mediaDevices.getUserMedia(c); break; }
+    catch(e) {
+      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
+        speak("Camera permission denied. Tap the lock icon in the address bar, tap Permissions, then allow Camera. Then double tap to try again.", true);
+        showErr("❌ Camera permission denied.\n\nFix:\n1. Tap lock icon in Chrome address bar\n2. Tap Permissions → Camera → Allow\n3. Reload page\n4. Double tap to start camera");
+        setCamPill("off");
+        setUI(bleConnected ? "clear" : "idle", bleConnected ? "Cane Connected" : "ANVI Navigation", "Camera blocked — see screen");
+        return;
+      }
+    }
+  }
+
+  if (!stream) {
+    speak("Camera could not start. Close other apps using the camera then double tap to try again.", true);
+    showErr("❌ Camera unavailable.\nClose other camera apps and double tap to retry.");
+    setCamPill("off");
+    setUI(bleConnected ? "clear" : "idle", bleConnected ? "Cane Connected" : "ANVI Navigation", "Camera failed — double tap to retry");
+    return;
+  }
+
+  try {
+    video.srcObject = stream;
+    await video.play();
+    canvas.width  = video.videoWidth  || 480;
+    canvas.height = video.videoHeight || 360;
+  } catch(e) { speak("Camera stream failed. Double tap to try again.", true); setCamPill("off"); return; }
+
+  try {
+    speak("Camera started. Loading AI model. About 10 seconds.", true);
+    setUI("idle", "Loading AI...", "Almost ready...");
+    model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+    cameraOn = true;
+    setCamPill("on");
+    setUI("clear", "All Clear", bleConnected ? "Camera detection active" : "Camera ON");
+    speak("Camera is now ON and AI detection is active. I will tell you about people and objects ahead. Say ANVI to ask me anything.", true);
+    setInterval(() => { if (cameraOn && !muted) speak("Camera is still on and scanning.", true); }, 30000);
+    detectLoop();
+  } catch(e) {
+    speak("AI model failed to load. Check your internet connection and double tap to try again.", true);
+    showErr("❌ AI model failed.\nCheck internet and double tap to retry.");
+    setCamPill("off"); cameraOn = false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// DETECTION LOOP
+// Only announces objects within MAX_DETECT_FEET
+// ══════════════════════════════════════════════════════════
+async function detectLoop() {
+  if (!model || detecting || !cameraOn) return;
+  detecting = true;
+  try {
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+    const preds = await model.detect(canvas);
+
+    const cards = document.getElementById("detCards");
+    cards.innerHTML = "";
+    currentDetections = [];
+
+    let danger = [], caution = [];
+
+    preds.forEach(p => {
+      if (p.score < 0.55) return;
+      const label    = p.class;
+      if (!ALL_TRACKED.includes(label)) return; // ignore untracked objects
+
+      const bboxH    = p.bbox[3];
+      const distFt   = estimateDist(label, bboxH);
+      const isDanger = DANGER_OBJECTS.includes(label);
+      const urgency  = urgencyLevel(distFt);
+
+      // Only process if within range or distance unknown
+      if (distFt !== null && distFt > MAX_DETECT_FEET) return;
+
+      // Store for voice questions
+      currentDetections.push({ label, distFt, isDanger, urgency });
+
+      // Build card
+      const card = document.createElement("div");
+      card.className = "detCard " + (urgency === "emergency" ? "emergency" : isDanger ? "danger" : "caution");
+      card.innerHTML =
+        `<span class="label">${getEmoji(label)} ${label}</span>` +
+        `<span class="dist">${distFt !== null ? distLabel(distFt) : "nearby"}</span>`;
+      cards.appendChild(card);
+
+      if (isDanger) danger.push({ label, distFt, urgency });
+      else          caution.push({ label, distFt });
+    });
+
+    // ── Voice announcement logic ──
+    if (danger.length > 0) {
+      // Sort by distance — closest first
+      danger.sort((a, b) => (a.distFt ?? 99) - (b.distFt ?? 99));
+      const closest = danger[0];
+      const distStr = closest.distFt !== null ? " about " + distLabel(closest.distFt) : "";
+
+      if (closest.urgency === "emergency") {
+        speak("Stop! " + closest.label + distStr + " right in front of you!", true);
+        setUI("emergency", "STOP — " + closest.label + "!", "Stop walking immediately");
+      } else if (closest.urgency === "warning") {
+        speak("Warning — " + closest.label + distStr + " ahead");
+        setUI("warning", "Warning — " + closest.label, distLabel(closest.distFt) + " ahead");
+      } else {
+        speak("Caution — " + closest.label + distStr + " ahead");
+        if (!isFinding) setUI("clear", "All Clear", "Camera detection active");
+      }
+    } else if (caution.length > 0) {
+      caution.sort((a, b) => (a.distFt ?? 99) - (b.distFt ?? 99));
+      const c = caution[0];
+      const distStr = c.distFt !== null ? " about " + distLabel(c.distFt) : "";
+      speak("Caution — " + c.label + distStr + " nearby");
+    } else {
+      if (!isFinding) setUI("clear", "All Clear", "Camera detection active");
+    }
+
+  } catch(e) { console.warn("Detection:", e); }
+  detecting = false;
+  setTimeout(detectLoop, 1000);
+}
+
+// ══════════════════════════════════════════════════════════
+// EMOJI MAP
+// ══════════════════════════════════════════════════════════
+function getEmoji(label) {
+  const m = {
+    person:"🧍", car:"🚗", truck:"🚛", bus:"🚌",
+    motorcycle:"🏍️", bicycle:"🚲", dog:"🐕",
+    chair:"🪑", "dining table":"🍽️", bench:"🪑",
+    couch:"🛋️", "potted plant":"🌿", suitcase:"🧳", backpack:"🎒"
+  };
+  return m[label] || "📦";
+}
+
+// ══════════════════════════════════════════════════════════
+// VOICE INPUT — Wake word "ANVI" + question answering
+// ══════════════════════════════════════════════════════════
+let recognition      = null;
+let isListeningForQ  = false;   // true = waiting for question after wake word
+let listeningTimeout = null;
+
+function initVoiceInput() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    console.warn("Speech recognition not supported");
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous    = true;   // keep listening always
+  recognition.interimResults = false;
+  recognition.lang          = "en-US";
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (event) => {
+    const transcript = event.results[event.results.length - 1][0].transcript.trim().toLowerCase();
+    console.log("Heard:", transcript);
+
+    if (!isListeningForQ) {
+      // Waiting for wake word "anvi"
+      if (transcript.includes("anvi") || transcript.includes("envy") || transcript.includes("navy")) {
+        activateQuestion();
+      }
+    } else {
+      // Already activated — process question
+      clearTimeout(listeningTimeout);
+      isListeningForQ = false;
+      hideListen();
+      answerQuestion(transcript);
+    }
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === "no-speech") { resumeListening(); return; }
+    console.warn("Recognition error:", e.error);
+    if (e.error !== "aborted") resumeListening();
+  };
+
+  recognition.onend = () => {
+    // Auto-restart so it keeps listening
+    if (!isListeningForQ) resumeListening();
+  };
+
+  recognition.start();
+  console.log("Voice recognition started — say ANVI to activate");
+}
+
+function resumeListening() {
+  if (!recognition) return;
+  try { recognition.start(); } catch(e) { /* already running */ }
+}
+
+function activateQuestion() {
+  isListeningForQ = true;
+  showListen("Listening — ask your question");
+  setUI("listening", "Listening...", "Ask your question now");
+  // Short beep to signal ready
+  const ctx2 = new (window.AudioContext || window.webkitAudioContext)();
+  const osc  = ctx2.createOscillator();
+  osc.connect(ctx2.destination);
+  osc.frequency.value = 880;
+  osc.start();
+  setTimeout(() => { osc.stop(); ctx2.close(); }, 150);
+
+  // Auto-cancel if no question after 6 seconds
+  listeningTimeout = setTimeout(() => {
+    isListeningForQ = false;
+    hideListen();
+    setUI(currentZone().includes("listening") ? "clear" : currentZone(),
+      "All Clear", cameraOn ? "Camera detection active" : "Safe to walk");
+  }, 6000);
+}
+
+function showListen(text) {
+  const b = document.getElementById("listenBadge");
+  document.getElementById("listenText").textContent = text;
+  b.classList.add("active");
+}
+function hideListen() { document.getElementById("listenBadge").classList.remove("active"); }
+
+// ══════════════════════════════════════════════════════════
+// QUESTION ANSWERING
+// ══════════════════════════════════════════════════════════
+function answerQuestion(q) {
+  console.log("Question:", q);
+
+  // ── What do you see / what's around ──
+  if (q.includes("see") || q.includes("around") || q.includes("there") || q.includes("detect")) {
+    if (currentDetections.length === 0) {
+      speak("I don't see anything nearby right now. The path looks clear.", true);
+    } else {
+      const items = currentDetections.map(d =>
+        d.label + (d.distFt !== null ? " at about " + distLabel(d.distFt) : "")
+      );
+      speak("I can see " + items.join(", and ") + ".", true);
+    }
+    return;
+  }
+
+  // ── How far / distance ──
+  if (q.includes("far") || q.includes("close") || q.includes("distance") || q.includes("how many")) {
+    if (currentDetections.length === 0) {
+      speak("Nothing detected nearby right now.", true);
+    } else {
+      const closest = currentDetections.sort((a,b) => (a.distFt ?? 99) - (b.distFt ?? 99))[0];
+      speak("The closest thing is a " + closest.label +
+        (closest.distFt !== null ? " at about " + distLabel(closest.distFt) : " nearby") + ".", true);
+    }
+    return;
+  }
+
+  // ── Is it safe / can I walk ──
+  if (q.includes("safe") || q.includes("walk") || q.includes("go") || q.includes("move")) {
+    const dangerous = currentDetections.filter(d => d.isDanger && d.distFt !== null && d.distFt <= 6);
+    if (dangerous.length === 0) {
+      speak("Yes, the path looks clear. You can walk forward.", true);
+    } else {
+      const d = dangerous[0];
+      speak("No, there is a " + d.label +
+        (d.distFt !== null ? " about " + distLabel(d.distFt) : "") + " ahead. Stop and wait.", true);
+    }
+    return;
+  }
+
+  // ── What is the closest thing ──
+  if (q.includes("closest") || q.includes("nearest") || q.includes("front")) {
+    if (currentDetections.length === 0) {
+      speak("Nothing detected in front of you right now.", true);
+    } else {
+      const c = currentDetections.sort((a,b) => (a.distFt ?? 99) - (b.distFt ?? 99))[0];
+      speak("The closest thing in front of you is a " + c.label +
+        (c.distFt !== null ? " at about " + distLabel(c.distFt) : "") + ".", true);
+    }
+    return;
+  }
+
+  // ── Is there a person ──
+  if (q.includes("person") || q.includes("people") || q.includes("someone") || q.includes("human")) {
+    const persons = currentDetections.filter(d => d.label === "person");
+    if (persons.length === 0) {
+      speak("No people detected nearby right now.", true);
+    } else {
+      speak(persons.length === 1
+        ? "Yes, there is one person" + (persons[0].distFt !== null ? " about " + distLabel(persons[0].distFt) + " away" : " nearby") + "."
+        : "Yes, there are " + persons.length + " people nearby.", true);
+    }
+    return;
+  }
+
+  // ── Is there a car ──
+  if (q.includes("car") || q.includes("vehicle") || q.includes("traffic")) {
+    const cars = currentDetections.filter(d => ["car","truck","bus","motorcycle","bicycle"].includes(d.label));
+    if (cars.length === 0) {
+      speak("No vehicles detected nearby right now.", true);
+    } else {
+      const c = cars[0];
+      speak("Yes, there is a " + c.label +
+        (c.distFt !== null ? " about " + distLabel(c.distFt) + " away" : " nearby") + ".", true);
+    }
+    return;
+  }
+
+  // ── Status ──
+  if (q.includes("status") || q.includes("connected") || q.includes("cane") || q.includes("camera")) {
+    readStatus(); return;
+  }
+
+  // ── Find cane ──
+  if (q.includes("find") && q.includes("cane") || q.includes("where") && q.includes("cane")) {
+    triggerLongPress(); return;
+  }
+
+  // ── Mute / unmute ──
+  if (q.includes("mute") || q.includes("quiet") || q.includes("silence")) {
+    muted = true;
+    document.getElementById("muteIcon").textContent = "🔇";
+    window.speechSynthesis.cancel();
+    return;
+  }
+  if (q.includes("unmute") || q.includes("sound on") || q.includes("voice on")) {
+    muted = false;
+    document.getElementById("muteIcon").textContent = "🔊";
+    speak("Voice is on", true); return;
+  }
+
+  // ── Help ──
+  if (q.includes("help") || q.includes("what can") || q.includes("commands")) {
+    speak("You can ask me: what do you see, how far is the person, is it safe to walk, is there a car, what is the closest thing, find my cane, or check my status.", true);
+    return;
+  }
+
+  // ── Unrecognised ──
+  speak("Sorry, I did not understand. Try asking: what do you see, is it safe to walk, or how far is the person.", true);
+}
+
+// ══════════════════════════════════════════════════════════
+// STARTUP
+// ══════════════════════════════════════════════════════════
+window.onload = () => {
+  setCamPill("off");
+  setOrbState("idle");
+
+  // Start voice recognition after a short delay
+  setTimeout(() => {
+    speak("Welcome to ANVI Navigation. Tap once to connect your cane. Double tap to start camera. Say ANVI at any time to ask me a question.", true);
+    // Start voice input after welcome message
+    setTimeout(initVoiceInput, 4000);
+  }, 800);
+};
+</script>
+</body>
+</html>
